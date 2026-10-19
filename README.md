@@ -157,15 +157,15 @@ README 使用 PNG 作为内嵌预览；可同时保留 PDF 用于高质量导出
 | 路径 | 内容 |
 |---|---|
 | `README.md` | 项目概览、结果摘要与运行说明 |
-| [analysis_report.Rmd](analysis_report.Rmd) | 完整分析报告源文件 |
-| [analysis_report.html](analysis_report.html)  | Knit 后生成的完整报告 |
+| [analysis_report.Rmd](reports/analysis_report.Rmd) | 完整分析报告源文件 |
+| [analysis_report.html](reports/analysis_report.html)  | Knit 后生成的完整报告 |
 | [scripts/macrophage_rnaseq.R](scripts/macrophage_rnaseq.R) | 从计数整理到功能分析与作图的 R 脚本 |
 | `data/raw/GSE163165_RAW/` | 解包后的六个原始计数文件 |
-| [results/clusterProfilerGOup.csv](results/clusterProfilerGOup.csv) | GO 上调结果，包含 BP、CC、MF |
-| [results/clusterProfilerGOdown.csv](results/clusterProfilerGOdown.csv) | GO 下调结果，包含 BP、CC、MF |
-| [results/clusterProfilerKEGGup.csv](results/clusterProfilerKEGGup.csv) | KEGG 上调结果 |
-| [results/clusterProfilerKEGGdown.csv](results/clusterProfilerKEGGdown.csv) | KEGG 下调结果 |
-| [results/gsea_hallmark.csv](results/gsea_hallmark.csv) | Hallmark 显著结果及核心富集基因 |
+| [results/clusterProfilerGOup.csv](results/figures/clusterProfilerGOup.csv) | GO 上调结果，包含 BP、CC、MF |
+| [results/clusterProfilerGOdown.csv](results/figures/clusterProfilerGOdown.csv) | GO 下调结果，包含 BP、CC、MF |
+| [results/clusterProfilerKEGGup.csv](results/figures/clusterProfilerKEGGup.csv) | KEGG 上调结果 |
+| [results/clusterProfilerKEGGdown.csv](results/figures/clusterProfilerKEGGdown.csv) | KEGG 下调结果 |
+| [results/gsea_hallmark.csv](results/figures/gsea_hallmark.csv) | Hallmark 显著结果及核心富集基因 |
 | `results/figures/` | PCA、相关性热图、MA 图、富集图等 |
 | `results/figures/` | 代表基因的供者配对表达图 |
 | `results/DGE_volcano.png` | 当前脚本生成的火山图|
