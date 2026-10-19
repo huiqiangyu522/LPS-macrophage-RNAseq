@@ -1,0 +1,14 @@
+# macOS
+.DS_Store
+
+# RStudio 和 R 会话文件
+.Rproj.user/
+.Rhistory
+.RData
+.Ruserdata
+
+# 原始数据
+/data/raw/
+
+# 中间对象
+*.rds

@@ -1,0 +1,479 @@
+---
+title: "LPS 诱导人单核细胞来源巨噬细胞炎症相关转录应答：GSE163165 独立重分析"
+author: "于会强"
+lang: zh-CN
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    number_sections: true
+    theme: flatly
+    highlight: tango
+    self_contained: true
+---
+
+<!-- 将本文件放在项目根目录，与 results/ 文件夹同级。 -->
+<!-- 本文件用于汇总已有结果和解释，不会自动重跑 DESeq2 或富集分析。 -->
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE,
+                      fig.align = "center")
+report_figure <- function(paths) {
+  found <- paths[file.exists(paths)]
+  if (length(found)) {
+    knitr::include_graphics(found[1])
+  } else {
+    cat(paste0("> 图像未载入：`", paths[1],
+               "`。请将相应 PNG 放回项目目录后重新 Knit。\n\n"))
+    invisible(NULL)
+  }
+}
+```
+
+
+# 研究目的与主要发现
+
+本项目使用公开 bulk RNA-seq 数据集 GSE163165，分析 LPS 处理后人 CD14⁺ 单核细胞来源巨噬细胞的表达变化。重点回答三个问题：LPS 处理是否伴随炎症相关转录应答；哪些细胞因子、趋化因子及干扰素应答基因贡献了该信号；处理效应是否在不同供者内呈现一致方向。
+
+现有结果支持以下主要发现：
+
+1. 上调基因富集于细胞因子信号、LPS 应答以及 TNF/NF-κB 等相关条目，Hallmark GSEA 同时显示炎症相关基因集正向富集。
+2. IFN-α 和 IFN-γ 应答基因集呈明显正向富集，提示干扰素相关表达特征是该处理反应的重要组成部分。
+3. IL1B、IL6、TNF 和 CCL2 配对表达图显示，三个供者在 LPS 处理后均呈表达升高趋势。
+4. 氧化磷酸化、部分脂质代谢、核糖体生成与翻译相关表达下降。
+
+本项目聚焦 LPS 诱导的炎症相关转录应答，并将干扰素应答及代谢、翻译相关变化纳入整体解释。研究结论限定于该公开数据所呈现的转录特征。
+
+# 数据来源与实验设计
+
+## 数据来源及分析范围
+
+数据来自 GEO 的 [GSE163165](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE163165)，关联原论文为 Vishnyakova 等发表于 2021 年的 *The response of two polar monocyte subsets to inflammation*（[DOI: 10.1016/j.biopha.2021.111614](https://doi.org/10.1016/j.biopha.2021.111614)）。原论文涉及不同单核细胞亚群及多种实验；本项目仅重分析该 GEO 系列中的 CD14⁺ 单核细胞来源巨噬细胞转录组，不重新分析其蛋白组或其他细胞亚群。
+
+GEO 记录显示，样本来自三名女性供者。通过磁珠分离 CD14⁺ 单核细胞后，以 M-CSF（5 ng/mL）培养 7 天获得巨噬细胞，再加入 100 ng/mL LPS。[1,2] 按作者整理的实验信息，LPS 处理时间为 24 h；本轮未重新核验关联论文全文中的处理时长记录。
+
+分析输入为 `GSE163165_RAW.tar` 中提供的基因层面原始计数文件。这里的“原始计数”不代表 FASTQ 原始测序数据；本 V1 从作者提供的计数结果开始，未重新完成测序读段质控、比对和定量。
+
+| GEO 样本 | GEO 样本标题 | 分组 |
+|---|---|---|
+| GSM4973752 | CD14-derived macrophages: control 1 | Control |
+| GSM4973753 | CD14-derived macrophages: LPS 1 | LPS |
+| GSM4973754 | CD14-derived macrophages: control 2 | Control |
+| GSM4973755 | CD14-derived macrophages: LPS 2 | LPS |
+| GSM4973756 | CD14-derived macrophages: control 3 | Control |
+| GSM4973757 | CD14-derived macrophages: LPS 3 | LPS |
+
+按项目样本信息，同一供者的 Control 和 LPS 样本构成一对，共三个生物学重复、六个样本。提交脚本依次将六个计数列命名为 `Control_1`、`LPS_1`、`Control_2`、`LPS_2`、`Control_3`、`LPS_3`，并将相邻两列指定为 D1、D2、D3。由于脚本依赖目录顺序赋名，完整复现时仍需保留“原文件—GEO 样本—组别—供者”的显式对应表。
+
+## 配对设计与比较方向
+
+差异分析使用配对设计，在模型中纳入供者因素：
+
+```r
+design = ~ donor + sampletype
+```
+
+脚本中的比较方向与收缩系数均为 **LPS 相对于 Control**：
+
+```r
+res_raw <- DESeq2::results(
+  dds,
+  contrast = c("sampletype", "LPS", "Control"),
+  alpha = 0.05
+)
+# 收缩系数：sampletype_LPS_vs_Control；方法：apeglm
+```
+
+正 LFC 表示 LPS 组表达更高，负 LFC 表示更低。`donor` 作为固定效应控制供者基线差异，当前模型估计跨供者的共同处理效应，未拟合 donor 与处理的交互作用。
+
+# 分析方法
+
+## 计数整理、归一化与样本检查
+
+脚本读取目录中的样本计数表，按 `Geneid` 和 `gene_name` 共同键执行内连接，将 `Geneid` 设为矩阵行名，并另存符号注释表。内连接仅保留所有输入表共有的条目；当前脚本未添加显式低表达计数预过滤，也未按重复 `gene_name` 汇总计数。原始行名的唯一性不代表基因符号或 Entrez ID 唯一。
+
+DESeq2 接收未归一化计数，以默认 size factor 方法进行归一化并拟合负二项模型。样本探索使用 `rlog(dds, blind = TRUE)`；差异检验使用原始计数而非 rlog 矩阵。[3]
+
+PCA 使用 `plotPCA()`，按其默认设置选取方差最高的 500 个条目，并以处理着色、供者区分点形。样本相关性使用 `cor(assay(rld))`，即默认 Pearson 相关；随后对相关矩阵调用 `pheatmap()`，使用默认欧氏距离和 complete linkage 聚类。这里树状图聚类的是样本相关性轮廓，不是显式指定的 `1 - Pearson r` 距离。[7]
+
+差异基因热图使用 DESeq2 归一化计数，选择 `padj < 0.05` 的全部条目，按行标准化（`scale = "row"`），采用默认欧氏距离与 complete linkage，并添加 sampletype 和 donor 注释。该图所用集合与火山图的双阈值差异集合不同。
+
+## 差异检验与 LFC 收缩
+
+使用 `design = ~ donor + sampletype` 运行 `DESeq()`，以默认 Wald 检验评估处理效应，并采用 Benjamini–Hochberg（BH）方法校正。原始比较调用 `results(..., alpha = 0.05)`；随后以 `lfcShrink(coef = "sampletype_LPS_vs_Control", type = "apeglm")` 收缩 LFC，并将收缩结果用于火山图、代表基因效应量和 ORA 前景筛选。
+
+差异筛选为：
+
+- 上调：`padj < 0.05` 且收缩后 `LFC >= log2(1.5)`。
+- 下调：`padj < 0.05` 且收缩后 `LFC <= -log2(1.5)`。
+- 统计显著但变化较小：`padj < 0.05` 且收缩后 `abs(LFC) < log2(1.5)`。
+
+1.5 倍是对估计效应量的事后筛选；脚本未通过 `lfcThreshold` 检验“变化是否超过 1.5 倍”。`padj` 是差异检验的多重校正结果，不是对收缩后 LFC 重新检验的结果。
+
+**结果对象的一致性限制：**当前 `lfcShrink()` 未显式传入前一步的 `res`，会按系数在内部提取检验结果；因此不能假定它与先前 `alpha = 0.05` 的原始结果具有完全相同的独立过滤设置。收缩步骤本身不构成新的显著性检验，但内部提取结果的设置可能影响 `padj`。本报告据实描述当前输出；若统一为显式传入 `res = res_raw` 的流程，需要重新核对差异数量和下游集合。[3,8]
+
+## 基因注释及 ORA
+
+脚本通过 AnnotationHub 获取人类 OrgDb（资源 ID：`AH121953`），以 SYMBOL 映射 Entrez ID。去除缺失映射、重复的 SYMBOL–ENTREZID 组合，以及一个 SYMBOL 对应多个 Entrez ID 的情况。连接表达结果后，继续排除一个 Entrez ID 对应多个原始 `Geneid` 的情况，保留非缺失 `padj` 的记录，并对用于 ORA 的 ID 向量去重。该规则降低映射歧义，同时会丢弃部分可表达条目。
+
+背景为上述 `res_ora` 中的唯一 Entrez ID；上、下调前景从相同表按双阈值分别提取，背景包含前景。GO 使用 `ont = "ALL"`、`pool = FALSE`，即 BP、CC、MF 分开计算，正文展示 BP。脚本未显式设置 GO 的 `pvalueCutoff`、`qvalueCutoff` 和大小范围，使用函数默认值（文档默认分别为 0.05、0.2 和 10–500）；GO 返回值并非未经筛选的全部检验结果。[9]
+
+KEGG 使用人类 `organism = "hsa"`、`keyType = "ncbi-geneid"`、BH 校正、`pvalueCutoff = 0.05`、`qvalueCutoff = 1`；结果再用 `setReadable()` 转为便于展示的基因符号。GO 通过 `readable = TRUE` 完成同类展示转换。
+
+下表从本次提交的结果表直接读取。有效前景及背景数是注释参与计算的数量，不等同于完整输入 ID 数或差异表达条目数。
+
+| 分析 | 表中有效前景数 | 表中有效背景数 | 提交表内显著条目数 |
+|---|---:|---:|---:|
+| GO BP，上调 | 1,817 | 12,676 | 920 |
+| GO BP，下调 | 2,106 | 12,676 | 108 |
+| KEGG，上调 | 1,003 | 6,287 | 57 |
+| KEGG，下调 | 1,158 | 6,287 | 24 |
+
+完整 GO 上调表包含 BP 920、CC 13、MF 60 个条目；下调表包含 BP 108、CC 43、MF 32 个条目。ORA 的完整输入背景数、映射保留率以及被排除的歧义记录数，需要运行对象才能进一步汇总。
+
+## Hallmark GSEA
+
+使用 `msigdbr(species = "Homo sapiens", collection = "H")` 获得 Hallmark 集合，提取唯一的 `gs_name`–`ncbi_gene` 对应关系。重新从最终配对模型提取 LPS vs Control 的原始 Wald `stat`，连接到 `res_ora`，以 Entrez ID 命名并按 `stat` 降序构建排序向量。
+
+**当前输入的实际范围：**脚本没有按 `padj < 0.05` 只保留显著基因，但因为沿用了 `res_ora`，已排除 `padj` 缺失和映射歧义记录。因此，该 GSEA 不能描述为“使用全部具有有效 Wald stat 的可映射基因”。没有 BH 校正值但具有有限 Wald stat 的条目，也可能被当前流程排除。扩展到全部有效 stat 的敏感性检查应单独重跑，不能仅修改方法文字。
+
+分析使用 `clusterProfiler::GSEA()`，`minGSSize = 15`、`maxGSSize = 500`、BH 校正、`pvalueCutoff = 1`，调用前 `set.seed(123)`。脚本未显式指定算法和精度参数；文档默认使用 fgsea，并以 `eps = 1e-10` 限制极小 P 值的估计精度，实际版本需由运行环境确认。[9,10]
+
+结果导出后以 `p.adjust < 0.05` 筛选，提交表包含 28 个显著集合，其中 17 个正 NES、11 个负 NES。NES 汇总图在正、负方向分别按校正后 P 值取最多 10 个集合，再按 NES 排列；因此图中不是展示全部显著结果，也不是直接选择 NES 绝对值最大的 20 个集合。
+
+正 NES 表示集合偏向排序正端，负 NES 表示偏向负端；在当前比较中分别对应偏向 LPS 表达升高或降低的一端。集合内不要求每个基因都同向变化，NES 也不直接等同于通路活性。多个集合具有相同的极小 P 值或 padj 时，不据此区分其更精细的显著性次序。[4,10]
+
+# 样本层面的质量评估
+
+## PCA 与样本相关性
+
+```{r figure-1, results="asis", out.width="85%", fig.cap="PCA：结合处理分组和 donor 检查样本结构"}
+report_figure(c("results/figures/PCA.png"))
+```
+
+根据作者对已生成 PCA 图的记录，Control 与 LPS 样本在前两个主成分空间中分离，PC1 解释总变异的 71%。这提示处理分组与主要表达变异相关；71% 是 PC1 的解释方差比例，不是对 LPS 处理效应的方差分解。供者因素仍在差异模型中控制。
+
+```{r figure-2, results="asis", out.width="85%", fig.cap="rlog 表达矩阵的样本相关性热图"}
+report_figure(c("results/figures/sample_correlation_heatmap.png"))
+```
+
+根据作者对已生成热图的记录，各样本整体相关性较高，且组内相关性普遍高于组间相关性。层次聚类将六个样本划分为与处理条件一致的两个主要分支，Control 与 LPS 组分别聚集，未见明显偏离所属组的样本。不同供者的样本优先按处理条件聚类，提示 LPS 处理相关的表达谱差异在供者间具有一定一致性。
+
+## MA 图与 LFC 收缩
+
+```{r figure-3, results="asis", out.width="85%", fig.cap="LFC 收缩前的 MA 图"}
+report_figure(c("results/figures/MA_before_shrinkage.png"))
+```
+
+```{r figure-4, results="asis", out.width="85%", fig.cap="LFC 收缩后的 MA 图"}
+report_figure(c("results/figures/MA_after_shrinkage.png"))
+```
+
+MA 图横轴为平均归一化计数，纵轴为 LFC。作者记录显示，低表达区域的原始 LFC 较分散，收缩后部分极端估计向零靠近，体现 apeglm 对不稳定效应量的收缩。脚本使用 `plotMA()` 的默认显著性着色阈值，未显式设置 `alpha`，因此不能把图上着色直接等同于本报告的 `padj < 0.05` 与 1.5 倍双阈值分类；正式展示时宜统一显式设定，并保持前后图坐标范围一致。[3]
+
+# 差异表达结果概览
+
+
+下列差异数量来自作者汇总，尚未由本轮提交文件独立复算；富集表不能反推出完整差异条目数。
+
+| 指标 | 作者汇总数量 |
+|---|---:|
+| 进入差异分析的表达条目 | 33,121 |
+| `padj` 非缺失的表达条目 | 33,121 |
+| 达到双阈值的上调条目 | 2,093 |
+| 达到双阈值的下调条目 | 2,354 |
+| 双阈值差异条目合计 | 4,447 |
+| 统计显著但变化幅度较小的条目 | 1,720 |
+
+数量指表达矩阵条目，不自动等同于唯一基因符号或唯一 Entrez ID 数。其中 `padj` 非缺失数须从原始和收缩结果分别核对，因为脚本未显式对齐两次结果提取的过滤设置。
+
+“统计显著但变化较小”说明统计证据与效应量是不同维度，不能一概认定这类基因没有生物学意义。
+
+```{r figure-5, results="asis", out.width="85%", fig.cap="差异表达火山图"}
+report_figure(c("results/DGE_olcano.png", "results/figures/DGE_volcano.png", "results/figures/DEG_volcano.png"))
+```
+
+火山图展示效应量与统计显著性的关系，并以既定双阈值标记差异条目。作者记录的前十个显著基因为 `CCL8`、`RP11-701P16.5`、`ITGB8`、`IL2RA`、`NAMPT`、`IL6`、`CXCL3`、`CCL20`、`GCH1` 和 `CXCL6`。
+
+```{r figure-6, results="asis", out.width="95%", fig.cap="差异表达基因热图"}
+report_figure(c("results/figures/sig_heatmap.png"))
+```
+
+热图展示全部 `padj < 0.05` 条目的归一化计数，经逐行标准化后比较各样本相对表达。该集合包含显著但变化较小的条目，范围大于火山图中的双阈值差异集合。颜色不用于比较不同基因的绝对表达量；sampletype 与 donor 注释用于解释样本结构。由于基因已依据同一组间比较筛选，热图不作为独立验证。
+
+# 炎症相关转录应答：主要结果
+
+## GO、KEGG 与 Hallmark 的整合证据
+
+上调基因的 GO BP 与 KEGG ORA，以及 Hallmark GSEA，均将免疫炎症相关表达变化识别为主要信号。下表归纳相关证据，而非将每个名称相近的条目作为独立发现重复计数。
+
+| 分析主题 | GO BP 上调基因证据 | KEGG 上调基因证据 | Hallmark GSEA 证据 |
+|---|---|---|---|
+| 炎症与细胞因子应答 | LPS 应答、细胞因子介导信号、经典 NF-κB 信号 | TNF、NF-κB、Toll-like receptor、JAK-STAT | TNFA SIGNALING VIA NFKB、INFLAMMATORY RESPONSE、IL6 JAK STAT3 SIGNALING 正向富集 |
+| 干扰素相关应答 | 病毒防御、Ⅱ型干扰素应答 | JAK-STAT 及含共享免疫基因的感染相关通路 | INTERFERON ALPHA RESPONSE、INTERFERON GAMMA RESPONSE 正向富集 |
+
+```{r figure-7, results="asis", out.width="90%", fig.cap="上调基因的 GO BP 富集结果"}
+report_figure(c("results/figures/GO_UP_BPdotplot.png"))
+```
+
+```{r figure-8, results="asis", out.width="90%", fig.cap="上调基因的 KEGG 富集结果"}
+report_figure(c("results/figures/KEGG_UP_BPdotplot.png", "results/figures/KEGG_UP_dotplot.png"))
+```
+
+```{r figure-9, results="asis", out.width="100%", fig.cap="Hallmark GSEA 显著基因集的 NES 汇总"}
+report_figure(c("results/figures/Hallmark_GSEA_NES.png"))
+```
+
+GO/KEGG 气泡图中，点大小表示命中基因数，颜色表示校正后 P 值，横轴 GeneRatio 表示输入集合中参与对应注释计算的基因所占比例。图中位置或点大小不能单独作为生物学重要性的排序。NES 图展示的条目受绘图筛选规则限制，未展示不等于未检验或不显著。
+
+```{r selected-gsea-curves, results="asis", out.width="100%", fig.cap="炎症、干扰素应答及氧化磷酸化的 GSEA 富集曲线"}
+report_figure("results/figures/Hallmark_GSEA_NES_enrich.png")
+```
+
+脚本选择上述三个集合绘制富集曲线；正文统计量来自结果表，本轮未额外核验曲线图中的 leading-edge 位置。
+
+## 炎症、细胞因子与趋化因子相关表达增强
+
+| 代表条目 | 来源及命中基因数 | 校正后 P 值 |
+|---|---|---:|
+| cytokine-mediated signaling pathway | GO BP，上调 174 个 | 6.07 × 10⁻³⁴ |
+| response to lipopolysaccharide | GO BP，上调 110 个 | 4.47 × 10⁻²¹ |
+| TNF signaling pathway | KEGG，上调 50 个 | 3.54 × 10⁻¹¹ |
+| NF-kappa B signaling pathway | KEGG，上调 41 个 | 1.99 × 10⁻⁸ |
+
+| Hallmark 基因集 | NES | 校正后 P 值 |
+|---|---:|---:|
+| TNFA SIGNALING VIA NFKB | +3.33 | 5.00 × 10⁻¹⁰ |
+| INFLAMMATORY RESPONSE | +3.16 | 5.00 × 10⁻¹⁰ |
+| IL6 JAK STAT3 SIGNALING | +2.61 | 5.00 × 10⁻¹⁰ |
+
+富集贡献列表包含炎症因子 `IL1B`、`IL6`、`TNF`，趋化因子 `CCL2`、`CCL5`、`CXCL10`，以及信号相关基因 `MYD88`、`IRAK4`、`NFKB1`、`RELA`。结合上调 ORA 与 GSEA 的方向，结果支持 LPS 处理伴随炎症、细胞因子和趋化因子相关转录应答增强。
+
+这些条目包含不同功能的成员，不能将所有上调成员都视为炎症促进因子。例如贡献列表也包括 `NFKBIA`、`TNFAIP3` 和 `SOCS3` 等调节相关基因。是否体现负反馈调节，还需结合其功能注释、表达情况及文献讨论。富集结果本身不证明 NF-κB 的磷酸化、核转位或细胞因子分泌增加。
+
+## 干扰素应答是主要信号的另一组成部分
+
+| Hallmark 基因集 | NES | 校正后 P 值 |
+|---|---:|---:|
+| INTERFERON GAMMA RESPONSE | +3.59 | 5.00 × 10⁻¹⁰ |
+| INTERFERON ALPHA RESPONSE | +3.43 | 5.00 × 10⁻¹⁰ |
+
+GO 上调结果中的 `response to virus`、`defense response to virus` 和 `response to type II interferon` 提供相关支持。贡献基因包括 `STAT1`、`IRF1`、`IRF7`、`ISG15`、`MX1`、`OAS1`、`OAS2`、`OAS3` 及部分 GBP 家族成员。
+
+这些结果说明干扰素应答相关表达特征偏向 LPS 组。Hallmark 的 IFN-γ 应答集合描述的是对 IFN-γ 应答时上调的基因，不等同于测量 IFN-γ 本身。[5] 因此，本报告不据此声称 IFN-γ 分泌增加，也不由 KEGG 的感染相关通路名称推断样本感染相应病原体。
+
+## 代表炎症基因的供者内配对表达
+
+选择 `IL1B`、`IL6`、`TNF` 和 `CCL2` 展示炎症主题的具体基因证据。这些基因出现在对应富集贡献列表中，分别代表炎症因子与趋化因子相关表达。
+
+```{r figure-10, results="asis", out.width="70%", fig.cap="IL1B：供者内配对表达"}
+report_figure(c("results/figures/gene_expression/IL1B.png", "results/figures/IL1B.png"))
+```
+
+```{r figure-11, results="asis", out.width="70%", fig.cap="IL6：供者内配对表达"}
+report_figure(c("results/figures/gene_expression/IL6.png", "results/figures/IL6.png"))
+```
+
+```{r figure-12, results="asis", out.width="70%", fig.cap="TNF：供者内配对表达"}
+report_figure(c("results/figures/gene_expression/TNF.png", "results/figures/TNF.png"))
+```
+
+```{r figure-13, results="asis", out.width="70%", fig.cap="CCL2：供者内配对表达"}
+report_figure(c("results/figures/gene_expression/CCL2.png", "results/figures/CCL2.png"))
+```
+
+配对图每个点代表一个样本，同一供者的两组样本以连线连接。按提交脚本，纵轴使用 `plotCounts()` 返回的归一化计数（默认加入 0.5 伪计数），采用 log10 刻度。归一化计数本身不去除 donor 效应，供者因素在差异模型中控制。
+
+作者对配对图的记录显示，三个供者的四个基因均在 LPS 处理后升高，同时保留供者间的表达差异。下表 LFC 与 padj 同样来自作者结果记录；本轮未提供 `infla` 或完整差异表，故未独立重算其数值。
+
+| 基因 | 收缩后 log2FC（LPS vs Control） | 原始差异检验的 BH 校正后 P 值 |
+|---|---:|---:|
+| IL1B | +6.84 | 3.96 × 10⁻⁴¹ |
+| IL6 | +7.88 | 1.01 × 10⁻⁷⁶ |
+| TNF | +1.96 | 2.13 × 10⁻⁵ |
+| CCL2 | +2.19 | 5.03 × 10⁻⁷ |
+
+模型估计的 LFC 综合处理与供者信息；配对图则补充各供者的变化方向及表达差异，两者分别反映模型效应与样本层面表现。
+
+# 伴随变化：代谢及核糖体相关表达程序
+
+## 线粒体呼吸与部分脂质代谢相关表达下降
+
+```{r figure-14, results="asis", out.width="90%", fig.cap="下调基因的 GO BP 富集结果"}
+report_figure(c("results/figures/GO_DOWN_BPdotplot.png"))
+```
+
+```{r figure-15, results="asis", out.width="90%", fig.cap="下调基因的 KEGG 富集结果"}
+report_figure(c("results/figures/KEGG_down_dotplot.png"))
+```
+
+| 代表条目 | 来源与方向 | 统计结果 |
+|---|---|---|
+| oxidative phosphorylation | GO BP，下调 43 个基因 | padj = 4.69 × 10⁻⁷ |
+| Oxidative phosphorylation | KEGG，下调 37 个基因 | padj = 5.19 × 10⁻⁵ |
+| Citrate cycle (TCA cycle) | KEGG，下调 15 个基因 | padj = 6.62 × 10⁻⁴ |
+| OXIDATIVE PHOSPHORYLATION | Hallmark，负向富集 | NES = −3.00；padj = 5.00 × 10⁻¹⁰ |
+| FATTY ACID METABOLISM | Hallmark，负向富集 | NES = −2.04；padj = 9.45 × 10⁻⁷ |
+
+氧化磷酸化的下调贡献列表包含 `NDUFS1`、`NDUFS3`、`NDUFB8`、`UQCRC2`、`COX4I1` 和 `COX5A` 等；TCA 条目包含 `CS`、`ACO2`、`IDH2` 和 `SDHB` 等。这些结果提示免疫应答增强的同时伴随代谢相关转录程序变化，但不能直接量化 ATP 生成、氧耗或代谢通量。
+
+值得注意的是，Hallmark `GLYCOLYSIS` 也负向富集（NES = −1.54，padj = 1.96 × 10⁻³），下调 KEGG 结果同时包含 `Glycolysis / Gluconeogenesis`（padj = 2.11 × 10⁻²）。因此，本数据不能直接概括为“从氧化磷酸化转向糖酵解”。该现象应结合处理时间、基因集组成和核心贡献基因进一步解释，而非套用预期模型。
+
+## 核糖体生成与翻译相关表达下降
+
+| 条目 | 命中下调基因数 | 校正后 P 值 |
+|---|---:|---:|
+| GO BP：cytoplasmic translation | 90 | 3.96 × 10⁻¹⁹ |
+| GO BP：ribosome biogenesis | 105 | 1.05 × 10⁻¹³ |
+| GO BP：rRNA processing | 75 | 2.42 × 10⁻⁹ |
+| KEGG：Ribosome | 97 | 4.35 × 10⁻²⁹ |
+
+贡献列表包含大量 `RPL`、`RPS` 家族成员，以及 `FBL`、`NPM1`、`NOP58` 等核糖体生成相关基因。Hallmark 的 MYC TARGETS V1/V2 和 MTORC1 SIGNALING 负向富集，为相关细胞状态变化提供补充线索；这些集合与核糖体功能并不等价。
+
+该结果支持核糖体组成、生成及翻译相关表达程序下降；与炎症相关表达的增强共同表明，处理后不同功能模块的转录变化并不同步。
+
+# 综合讨论
+
+整合分析显示：GO 与 KEGG 上调基因富集结果揭示细胞因子、TNF/NF-κB 等信号的富集，Hallmark 同时显示炎症及干扰素应答正向富集。代表基因的供者内变化用于进一步检查该信号是否在各重复中一致。炎症相关集合与具体效应基因的变化共同构成当前数据的主要表达证据。
+
+原论文摘要也报告了免疫、干扰素和细胞因子相关富集，以及 RNA 结合、部分基础细胞过程相关的下调变化。[6] 本次结果在总体方向上与其一致，但这不是对原研究的独立实验验证；筛选阈值、注释版本、模型与基因集的差异都可能改变具体条目和排名。当前未逐项复现原论文的全部分析设置。
+
+GO、KEGG 和 Hallmark 存在基因与功能重叠，三类结果的一致性应理解为不同注释视角的相互支持，而非三次独立验证。疾病命名条目也应按具体贡献基因解释。例如，在本次 KEGG 下调表中，`Coronavirus disease` 的 84 个命中基因有 71 个同时出现在 `Ribosome` 的命中列表中，说明该信号很大程度上与核糖体基因重叠，不能据此推断冠状病毒感染。
+
+除主要信号外，Hallmark 中的凋亡、p53 或其他命名基因集可以作为探索线索，但当前报告不据此认定已经发生凋亡、肿瘤过程或特定细胞分化。
+
+# 局限与后续工作
+
+1. **样本与外推范围。**仅三个女性供者，虽采用配对设计控制个体基线差异，但对群体异质性和普遍性的评估仍有限。单一剂量与时间点不能说明应答的动态顺序。
+2. **分析起点。**V1 使用作者提供的基因计数，未独立检查 FASTQ 质量、比对率和定量过程，无法仅凭下游 PCA 排除上游技术问题。
+3. **GSEA 输入范围。**当前排序由 ORA 整理表衔接，排除了 `padj` 缺失条目；当前显著基因集与 NES 是该输入范围下的结果，扩展输入后的稳定性尚未评估。
+4. **注释与筛选依赖。**重复符号、ID 映射失败、映射歧义及数据库更新可能改变富集输入；需报告映射保留率、前景与背景数量以及注释版本。
+5. **统计与选择限制。**ORA 依赖差异阈值和背景定义；GSEA 依赖排序统计量、基因集覆盖和重复 ID 处理。代表基因按主题选择，其图形不是独立验证，也不能替代完整结果表。
+6. **转录与功能不同。**RNA 变化不能直接证明蛋白活性、分泌水平、代谢通量或因果调控；细胞内总 RNA 或总体表达量变化也不能仅由相对归一化计数推断。
+
+当前脚本已绘制 TNFA SIGNALING VIA NFKB、INTERFERON GAMMA RESPONSE 和 OXIDATIVE PHOSPHORYLATION 的 GSEA 曲线，可结合其 leading-edge 基因继续检查主信号。下一步优先显式对齐原始与收缩结果、保存样本来源映射，并以全部有效 Wald stat 重建 GSEA 输入作敏感性检查；若更新结果，应同步替换对应表格和图片。上游流程复现及独立功能验证留待后续版本。
+
+# 结论
+
+提交脚本的比较方向为 LPS vs Control。在当前分析集合及作者记录范围内，结果支持：LPS 处理后，CD14⁺ 单核细胞来源巨噬细胞呈现炎症、细胞因子及干扰素相关转录应答增强，同时伴随线粒体代谢、核糖体生成和翻译相关表达程序下降。该结果界定了本数据中的主要表达特征，并为具体基因和功能层面的后续验证提供线索，不构成新的因果机制证明。
+
+# 参考资料
+
+1. GEO：[GSE163165：Response of CD14-derived macrophages to LPS](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE163165)。
+2. GEO：[GSM4973752 样本记录：培养、处理及数据处理说明](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSM4973752)。
+3. DESeq2：[Analyzing RNA-seq data with DESeq2](https://bioconductor.org/packages/release/bioc/vignettes/DESeq2/inst/doc/DESeq2.html)。
+4. GSEA：[GSEA User Guide](https://docs.gsea-msigdb.org/GSEA/GSEA_User_Guide/)。
+5. MSigDB：[HALLMARK_INTERFERON_GAMMA_RESPONSE](https://www.gsea-msigdb.org/gsea/msigdb/cards/HALLMARK_INTERFERON_GAMMA_RESPONSE)。
+6. Vishnyakova P, et al. The response of two polar monocyte subsets to inflammation. *Biomedicine & Pharmacotherapy*. 2021;139:111614. [DOI](https://doi.org/10.1016/j.biopha.2021.111614)；[PubMed](https://pubmed.ncbi.nlm.nih.gov/33930675/)。
+
+7. pheatmap：[函数参数与默认聚类设置](https://search.r-project.org/CRAN/refmans/pheatmap/html/pheatmap.html)。
+8. DESeq2：[lfcShrink 源代码与结果对象说明](https://rdrr.io/bioc/DESeq2/src/R/lfcShrink.R)。
+9. clusterProfiler：[参考手册](https://bioconductor.org/packages/release/bioc/manuals/clusterProfiler/man/clusterProfiler.pdf)。
+10. fgsea：[官方教程：P 值估计精度与 eps](https://bioconductor.org/packages/devel/bioc/vignettes/fgsea/inst/doc/fgsea-tutorial.html)。
+
+# 数据溯源与复现说明
+
+## 本轮可确认的内容
+
+提交文件包括分析脚本、修订报告、GO 上/下调表、KEGG 上/下调表和 Hallmark 显著结果表。脚本中的模型、比较、收缩、图形矩阵及多数富集参数已能直接追溯；五份表中的显著条目数、代表条目的命中数、NES 和 padj 已核对。GO/KEGG 四份新表与此前提交版本内容一致；本轮 Hallmark CSV 已正确引用含逗号的字段，可正常读取。
+
+目前差异条目总数、四个代表基因的精确统计量，以及 PCA、MA 和逐供者表达观察来自作者汇总或图形记录；它们不应被误认为从富集表重新推算。实际 R 与包版本、数据库版本及下载日期需从原运行会话导出。
+
+## 完整核验所需的最少补充资料
+
+| 资料 | 用途 |
+|---|---|
+| 已运行 `DESeq()` 的 `dds` 对象，或原始计数矩阵加 metadata | 核对输入、配对、归一化及模型；不必先提供 FASTQ |
+| 原始结果与实际使用的收缩结果全表 | 核对非缺失 padj 数、差异数量、代表基因 LFC 与 padj |
+| 原文件—GEO—组别—donor 对应表 | 确认按目录顺序赋名没有错配 |
+| PCA 数据/解释方差、样本相关矩阵、四个基因的配对计数 | 复核图形描述与供者一致性 |
+| `sessionInfo()`、Hallmark 数据库版本及完整 GSEA 结果 | 固定软件与注释来源，保留未显著的检验结果 |
+| 正文所引用的 PNG 图片 | 生成含完整图形的 HTML 报告并检查版式 |
+
+将本文件放在项目根目录，与 `results/` 同级。图像载入函数会查找脚本路径和原报告路径；图片缺失时显示说明，不会把缺失图片当作已完成核验。
+
+## 在原分析会话中导出核验数据
+
+下面代码只导出当前对象，不重跑模型、不覆盖原结果，也不改变当前 GSEA 输入。请在完成原分析的 R 会话中执行；它生成 `results/report_review_data/` 目录及压缩包，便于补充上述资料。代码不会在 Knit 时自动执行。
+
+```{r export-review-data, eval=FALSE, echo=TRUE}
+review_dir <- "results/report_review_data"
+dir.create(review_dir, recursive = TRUE, showWarnings = FALSE)
+
+# 保留当前实际使用的对象，避免用重新计算的结果替代其来源
+object_names <- c(
+  "dds", "res", "res_raw", "meta", "gene_annotation", "res_ora",
+  "pca_data", "rld_cor", "gsea_hallmark", "hallmark",
+  "entrez_map", "annotations_orgdb", "res_ora_stat", "gene_list"
+)
+present_names <- object_names[vapply(
+  object_names, exists, logical(1), envir = .GlobalEnv, inherits = FALSE
+)]
+saveRDS(
+  mget(present_names, envir = .GlobalEnv),
+  file.path(review_dir, "analysis_snapshot.rds")
+)
+
+export_table <- function(x, file_name, row_id = NULL) {
+  z <- as.data.frame(x)
+  if (!is.null(row_id)) {
+    z <- cbind(setNames(data.frame(rownames(z)), row_id), z)
+  }
+  write.csv(z, file.path(review_dir, file_name),
+            row.names = FALSE, quote = TRUE)
+}
+
+if (exists("res_raw")) export_table(res_raw, "results_raw.csv", "gene")
+if (exists("res")) export_table(res, "results_current_shrunken.csv", "gene")
+if (exists("meta")) export_table(meta, "metadata.csv", "sample")
+if (exists("pca_data")) export_table(pca_data, "pca_data.csv", "sample")
+if (exists("rld_cor")) export_table(rld_cor, "sample_correlation.csv", "sample")
+if (exists("gsea_hallmark")) {
+  export_table(gsea_hallmark, "gsea_hallmark_all.csv")
+}
+if (exists("hallmark") && "db_version" %in% names(hallmark)) {
+  writeLines(unique(as.character(hallmark$db_version)),
+             file.path(review_dir, "hallmark_db_version.txt"))
+}
+
+if (exists("dds")) {
+  export_table(DESeq2::counts(dds, normalized = FALSE),
+               "raw_counts.csv", "gene")
+  export_table(DESeq2::counts(dds, normalized = TRUE),
+               "normalized_counts.csv", "gene")
+  writeLines(c(
+    paste("design:", paste(deparse(DESeq2::design(dds)), collapse = " ")),
+    paste("coefficients:", paste(DESeq2::resultsNames(dds), collapse = ", "))
+  ), file.path(review_dir, "model.txt"))
+
+  genes_review <- intersect(c("IL1B", "IL6", "TNF", "CCL2"), rownames(dds))
+  if (length(genes_review)) {
+    paired <- do.call(rbind, lapply(genes_review, function(g) {
+      z <- DESeq2::plotCounts(
+        dds, gene = g, intgroup = c("sampletype", "donor"), returnData = TRUE
+      )
+      data.frame(gene = g, sample = rownames(z), z, row.names = NULL)
+    }))
+    export_table(paired, "representative_gene_counts.csv")
+  }
+}
+
+# 这是脚本采用的顺序映射记录；还需与 GEO 及原始记录人工核对
+if (exists("samples") && exists("counts_table") && exists("meta") &&
+    length(samples) == ncol(counts_table)) {
+  mapping <- data.frame(
+    input_file = basename(samples),
+    assigned_sample = colnames(counts_table),
+    meta[colnames(counts_table), , drop = FALSE], row.names = NULL
+  )
+  export_table(mapping, "input_order_and_assignment.csv")
+}
+writeLines(capture.output(sessionInfo()),
+           file.path(review_dir, "sessionInfo.txt"))
+utils::zip(
+  zipfile = "results/report_review_data.zip",
+  files = list.files(review_dir, full.names = TRUE)
+)
+```
+
